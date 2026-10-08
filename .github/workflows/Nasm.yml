@@ -1,4 +1,4 @@
-name: Build NASM APK
+name: Build NASM Android APK
 
 on:
   workflow_dispatch:
@@ -14,75 +14,82 @@ jobs:
     runs-on: ubuntu-24.04
 
     env:
+      # ------------------------------------------------------------
+      # Versions
+      # ------------------------------------------------------------
       NASM_VERSION: "3.02"
       NASM_SHA256: "87336eba53b4acfe917424ab5d500d2b0054d9f5148d35c2273ccf2cfb712f0d"
 
-      # Android NDK r29
       NDK_VERSION: "29.0.14206865"
-
-      # Android API used for the NASM executable.
       ANDROID_API: "29"
 
-      # Your target architecture.
-      ABI: "arm64-v8a"
-
+      AGP_VERSION: "9.3.0"
       GRADLE_VERSION: "9.5.0"
 
+      # ARM64 Android.
+      ABI: "arm64-v8a"
+
     steps:
-      # ------------------------------------------------------------
-      # 1. Checkout
-      # ------------------------------------------------------------
-      - name: Checkout
+      # ============================================================
+      # 1. Get repository
+      # ============================================================
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ------------------------------------------------------------
-      # 2. JDK
-      # ------------------------------------------------------------
+      # ============================================================
+      # 2. Java 17
+      # ============================================================
       - name: Set up JDK 17
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
 
-      # ------------------------------------------------------------
+      # ============================================================
       # 3. Android SDK
-      # ------------------------------------------------------------
+      # ============================================================
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
 
       - name: Install Android SDK and NDK
         shell: bash
         run: |
-          set -euxo pipefail
+          set -euo pipefail
+
+          yes | sdkmanager --licenses >/dev/null || true
 
           sdkmanager --install \
+            "platform-tools" \
             "platforms;android-36" \
             "build-tools;36.0.0" \
             "ndk;${NDK_VERSION}"
 
           echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
 
-      # ------------------------------------------------------------
-      # 4. Create the complete Android project
-      # ------------------------------------------------------------
-      - name: Create entire Android project
+      # ============================================================
+      # 4. Create COMPLETE Android project
+      # ============================================================
+      - name: Generate entire Android project
         shell: bash
         run: |
-          set -euxo pipefail
+          set -euo pipefail
 
           rm -rf app
-          rm -f build.gradle settings.gradle gradle.properties
+          rm -f build.gradle
+          rm -f settings.gradle
+          rm -f gradle.properties
+          rm -f README.md
 
           mkdir -p \
             app/src/main/java/com/rayan/nasm \
-            app/src/main/jniLibs/arm64-v8a \
             app/src/main/res/values \
             app/src/main/assets \
+            app/src/main/jniLibs/${ABI} \
             build/output
 
-          # ========================================================
+          # --------------------------------------------------------
           # settings.gradle
-          # ========================================================
+          # --------------------------------------------------------
           cat > settings.gradle <<'EOF'
           pluginManagement {
               repositories {
@@ -94,6 +101,7 @@ jobs:
 
           dependencyResolutionManagement {
               repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+
               repositories {
                   google()
                   mavenCentral()
@@ -101,21 +109,22 @@ jobs:
           }
 
           rootProject.name = "NASM"
+
           include(":app")
           EOF
 
-          # ========================================================
+          # --------------------------------------------------------
           # Root build.gradle
-          # ========================================================
-          cat > build.gradle <<'EOF'
+          # --------------------------------------------------------
+          cat > build.gradle <<EOF
           plugins {
-              id 'com.android.application' version '9.3.0' apply false
+              id 'com.android.application' version '${AGP_VERSION}' apply false
           }
           EOF
 
-          # ========================================================
+          # --------------------------------------------------------
           # gradle.properties
-          # ========================================================
+          # --------------------------------------------------------
           cat > gradle.properties <<'EOF'
           org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
           org.gradle.daemon=false
@@ -123,42 +132,53 @@ jobs:
           android.nonTransitiveRClass=true
           EOF
 
-          # ========================================================
+          # --------------------------------------------------------
           # app/build.gradle
-          # ========================================================
-          cat > app/build.gradle <<'EOF'
+          # --------------------------------------------------------
+          cat > app/build.gradle <<EOF
           plugins {
               id 'com.android.application'
           }
 
           android {
               namespace 'com.rayan.nasm'
+
               compileSdk 36
+
+              ndkVersion '${NDK_VERSION}'
 
               defaultConfig {
                   applicationId 'com.rayan.nasm'
+
+                  /*
+                   * Android 10 = API 29.
+                   */
                   minSdk 29
+
                   targetSdk 36
 
                   versionCode 1
-                  versionName '3.02'
+                  versionName '${NASM_VERSION}'
               }
 
-              ndkVersion '29.0.14206865'
-
+              /*
+               * NASM is packaged as a native executable in jniLibs.
+               * It is NOT loaded with System.loadLibrary().
+               */
               sourceSets {
                   main {
-                      jniLibs.srcDirs = ['src/main/jniLibs']
+                      jniLibs.srcDirs = [
+                          'src/main/jniLibs'
+                      ]
                   }
               }
 
               packaging {
                   jniLibs {
                       /*
-                       * Extract libnasm.so to the app's native-library
-                       * directory. The executable is then run from that
-                       * native directory rather than from normal writable
-                       * app data.
+                       * Extract native libraries from the APK.
+                       * This allows the bundled executable to live in
+                       * Android's native-library directory.
                        */
                       useLegacyPackaging = true
                   }
@@ -166,9 +186,9 @@ jobs:
           }
           EOF
 
-          # ========================================================
+          # --------------------------------------------------------
           # strings.xml
-          # ========================================================
+          # --------------------------------------------------------
           cat > app/src/main/res/values/strings.xml <<'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <resources>
@@ -176,11 +196,12 @@ jobs:
           </resources>
           EOF
 
-          # ========================================================
+          # --------------------------------------------------------
           # AndroidManifest.xml
-          # ========================================================
+          # --------------------------------------------------------
           cat > app/src/main/AndroidManifest.xml <<'EOF'
           <?xml version="1.0" encoding="utf-8"?>
+
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
               <application
@@ -205,15 +226,16 @@ jobs:
           </manifest>
           EOF
 
-          # ========================================================
+          # --------------------------------------------------------
           # MainActivity.java
-          # ========================================================
+          # --------------------------------------------------------
           cat > app/src/main/java/com/rayan/nasm/MainActivity.java <<'EOF'
           package com.rayan.nasm;
 
           import android.app.Activity;
           import android.os.Bundle;
           import android.graphics.Typeface;
+          import android.view.Gravity;
           import android.view.View;
           import android.widget.Button;
           import android.widget.EditText;
@@ -221,97 +243,122 @@ jobs:
           import android.widget.ScrollView;
           import android.widget.TextView;
 
+          import java.io.ByteArrayOutputStream;
           import java.io.File;
           import java.io.FileOutputStream;
           import java.io.InputStream;
-          import java.io.IOException;
+          import java.nio.charset.StandardCharsets;
+          import java.util.ArrayList;
 
           public class MainActivity extends Activity {
 
-              private EditText source;
-              private EditText arguments;
-              private TextView output;
+              private EditText assemblyEditor;
+              private EditText argumentsEditor;
+              private TextView resultView;
 
               @Override
-              protected void onCreate(Bundle savedInstanceState) {
-                  super.onCreate(savedInstanceState);
+              protected void onCreate(Bundle state) {
+                  super.onCreate(state);
 
                   LinearLayout root = new LinearLayout(this);
                   root.setOrientation(LinearLayout.VERTICAL);
                   root.setPadding(24, 24, 24, 24);
 
                   TextView title = new TextView(this);
-                  title.setText("NASM 3.02");
+                  title.setText("NASM " + getVersion());
                   title.setTextSize(26);
-                  title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                  title.setTypeface(
+                      Typeface.DEFAULT,
+                      Typeface.BOLD
+                  );
 
                   root.addView(title);
 
-                  TextView info = new TextView(this);
-                  info.setText(
-                      "Native ARM64 NASM assembler\n" +
-                      "Type NASM command-line arguments below."
+                  TextView description = new TextView(this);
+                  description.setText(
+                      "Netwide Assembler for ARM64 Android\n" +
+                      "Android 10+"
                   );
-                  info.setPadding(0, 12, 0, 12);
+                  description.setPadding(0, 12, 0, 12);
 
-                  root.addView(info);
+                  root.addView(description);
 
-                  arguments = new EditText(this);
-                  arguments.setSingleLine(true);
-                  arguments.setHint(
+                  TextView argumentsLabel = new TextView(this);
+                  argumentsLabel.setText("NASM arguments:");
+                  root.addView(argumentsLabel);
+
+                  argumentsEditor = new EditText(this);
+                  argumentsEditor.setSingleLine(true);
+                  argumentsEditor.setTypeface(Typeface.MONOSPACE);
+                  argumentsEditor.setHint(
                       "-f bin source.asm -o output.bin"
                   );
 
-                  root.addView(arguments);
+                  root.addView(argumentsEditor);
 
-                  source = new EditText(this);
-                  source.setTypeface(Typeface.MONOSPACE);
-                  source.setGravity(
-                      android.view.Gravity.TOP |
-                      android.view.Gravity.START
+                  TextView sourceLabel = new TextView(this);
+                  sourceLabel.setText("Assembly source:");
+                  sourceLabel.setPadding(0, 12, 0, 4);
+
+                  root.addView(sourceLabel);
+
+                  assemblyEditor = new EditText(this);
+                  assemblyEditor.setGravity(
+                      Gravity.TOP | Gravity.START
                   );
-                  source.setMinLines(12);
-                  source.setText(
+                  assemblyEditor.setTypeface(
+                      Typeface.MONOSPACE
+                  );
+                  assemblyEditor.setMinLines(12);
+                  assemblyEditor.setText(
                       "bits 64\n\n" +
                       "mov eax, 1234h\n" +
                       "ret\n"
                   );
 
                   root.addView(
-                      source,
+                      assemblyEditor,
                       new LinearLayout.LayoutParams(
                           -1,
                           0,
-                          1
+                          1.0f
                       )
                   );
 
-                  Button assemble = new Button(this);
-                  assemble.setText("Assemble");
+                  Button assembleButton = new Button(this);
+                  assembleButton.setText("Assemble");
 
-                  root.addView(assemble);
+                  root.addView(assembleButton);
 
-                  output = new TextView(this);
-                  output.setTypeface(Typeface.MONOSPACE);
-                  output.setPadding(0, 16, 0, 0);
+                  resultView = new TextView(this);
+                  resultView.setTypeface(
+                      Typeface.MONOSPACE
+                  );
+                  resultView.setTextIsSelectable(true);
+                  resultView.setPadding(
+                      0,
+                      16,
+                      0,
+                      16
+                  );
 
-                  ScrollView scroll = new ScrollView(this);
-                  scroll.addView(output);
+                  ScrollView outputScroll = new ScrollView(this);
+                  outputScroll.addView(resultView);
 
                   root.addView(
-                      scroll,
+                      outputScroll,
                       new LinearLayout.LayoutParams(
                           -1,
                           0,
-                          0.7f
+                          0.8f
                       )
                   );
 
-                  assemble.setOnClickListener(
+                  assembleButton.setOnClickListener(
                       new View.OnClickListener() {
                           @Override
                           public void onClick(View v) {
-                              assembleSource();
+                              assemble();
                           }
                       }
                   );
@@ -319,306 +366,468 @@ jobs:
                   setContentView(root);
               }
 
-              private void assembleSource() {
-                  output.setText("Running NASM...\n");
+              private String getVersion() {
+                  return "3.02";
+              }
 
-                  File workDir = new File(
+              private void assemble() {
+                  resultView.setText(
+                      "Starting NASM...\n"
+                  );
+
+                  File workingDirectory = new File(
                       getFilesDir(),
                       "nasm-work"
                   );
 
-                  if (!workDir.exists() && !workDir.mkdirs()) {
-                      output.setText(
-                          "Could not create work directory."
-                      );
-                      return;
+                  if (!workingDirectory.exists()) {
+                      if (!workingDirectory.mkdirs()) {
+                          resultView.setText(
+                              "Could not create:\n" +
+                              workingDirectory
+                          );
+                          return;
+                      }
                   }
 
                   File sourceFile = new File(
-                      workDir,
+                      workingDirectory,
                       "source.asm"
                   );
 
                   try {
-                      writeFile(
+                      writeText(
                           sourceFile,
-                          source.getText().toString()
+                          assemblyEditor
+                              .getText()
+                              .toString()
                       );
 
-                      File nasm = new File(
-                          getApplicationInfo().nativeLibraryDir,
+                      File nasmExecutable = new File(
+                          getApplicationInfo()
+                              .nativeLibraryDir,
                           "libnasm.so"
                       );
 
-                      if (!nasm.exists()) {
-                          output.setText(
-                              "NASM executable not found:\n" +
-                              nasm.getAbsolutePath()
+                      if (!nasmExecutable.exists()) {
+                          resultView.setText(
+                              "NASM executable not found.\n\n" +
+                              nasmExecutable
+                                  .getAbsolutePath()
                           );
                           return;
                       }
 
-                      String args = arguments.getText().toString().trim();
+                      /*
+                       * Default command:
+                       *
+                       * nasm -f bin source.asm -o output.bin
+                       */
+                      String args =
+                          argumentsEditor
+                              .getText()
+                              .toString()
+                              .trim();
 
-                      ProcessBuilder pb;
+                      ArrayList<String> command =
+                          new ArrayList<>();
+
+                      command.add(
+                          nasmExecutable
+                              .getAbsolutePath()
+                      );
 
                       if (args.length() == 0) {
                           File outputFile = new File(
-                              workDir,
+                              workingDirectory,
                               "output.bin"
                           );
 
-                          pb = new ProcessBuilder(
-                              nasm.getAbsolutePath(),
-                              "-f",
-                              "bin",
-                              sourceFile.getAbsolutePath(),
-                              "-o",
-                              outputFile.getAbsolutePath()
+                          command.add("-f");
+                          command.add("bin");
+
+                          command.add(
+                              sourceFile
+                                  .getAbsolutePath()
+                          );
+
+                          command.add("-o");
+                          command.add(
+                              outputFile
+                                  .getAbsolutePath()
                           );
                       } else {
                           /*
-                           * Simple whitespace argument parser.
-                           * For ordinary NASM command lines this is enough.
+                           * Basic command-line splitting.
                            */
-                          java.util.ArrayList<String> command =
-                              new java.util.ArrayList<>();
+                          String[] pieces =
+                              args.split("\\s+");
 
-                          command.add(nasm.getAbsolutePath());
+                          boolean sourceSpecified =
+                              false;
 
-                          for (String part : args.split("\\s+")) {
-                              if (!part.isEmpty()) {
-                                  command.add(part);
+                          for (String piece : pieces) {
+                              if (piece.length() == 0) {
+                                  continue;
+                              }
+
+                              command.add(piece);
+
+                              if (piece.endsWith(".asm")) {
+                                  sourceSpecified = true;
                               }
                           }
 
-                          /*
-                           * If "source.asm" was not explicitly provided,
-                           * automatically use the editor contents.
-                           */
-                          boolean hasAsm = false;
-
-                          for (String part : command) {
-                              if (part.endsWith(".asm")) {
-                                  hasAsm = true;
-                                  break;
-                              }
-                          }
-
-                          if (!hasAsm) {
+                          if (!sourceSpecified) {
                               command.add(
-                                  sourceFile.getAbsolutePath()
+                                  sourceFile
+                                      .getAbsolutePath()
                               );
                           }
-
-                          pb = new ProcessBuilder(command);
                       }
 
-                      pb.directory(workDir);
-                      pb.redirectErrorStream(true);
+                      ProcessBuilder processBuilder =
+                          new ProcessBuilder(command);
 
-                      Process process = pb.start();
+                      processBuilder
+                          .directory(workingDirectory);
 
-                      java.io.ByteArrayOutputStream buffer =
-                          new java.io.ByteArrayOutputStream();
+                      processBuilder
+                          .redirectErrorStream(true);
 
-                      InputStream in = process.getInputStream();
+                      Process process =
+                          processBuilder.start();
 
-                      byte[] data = new byte[4096];
-                      int count;
+                      ByteArrayOutputStream output =
+                          new ByteArrayOutputStream();
 
-                      while ((count = in.read(data)) != -1) {
-                          buffer.write(data, 0, count);
+                      InputStream input =
+                          process.getInputStream();
+
+                      byte[] buffer =
+                          new byte[4096];
+
+                      int length;
+
+                      while (
+                          (length = input.read(buffer)) != -1
+                      ) {
+                          output.write(
+                              buffer,
+                              0,
+                              length
+                          );
                       }
 
-                      int exitCode = process.waitFor();
+                      int exitCode =
+                          process.waitFor();
 
-                      String text = new String(
-                          buffer.toByteArray(),
-                          java.nio.charset.StandardCharsets.UTF_8
+                      String outputText =
+                          new String(
+                              output.toByteArray(),
+                              StandardCharsets.UTF_8
+                          );
+
+                      StringBuilder result =
+                          new StringBuilder();
+
+                      result.append(
+                          "Exit code: "
                       );
 
-                      output.setText(
-                          "Exit code: " +
-                          exitCode +
-                          "\n\n" +
-                          text
+                      result.append(exitCode);
+                      result.append("\n\n");
+
+                      result.append(outputText);
+
+                      result.append(
+                          "\n\nWorking directory:\n"
                       );
 
-                  } catch (Throwable e) {
-                      output.setText(
-                          "Execution failed:\n" +
-                          e.toString()
+                      result.append(
+                          workingDirectory
+                              .getAbsolutePath()
+                      );
+
+                      resultView.setText(
+                          result.toString()
+                      );
+
+                  } catch (Throwable error) {
+                      resultView.setText(
+                          "NASM execution failed:\n\n" +
+                          error.toString()
                       );
                   }
               }
 
-              private void writeFile(
+              private void writeText(
                   File file,
                   String text
-              ) throws IOException {
+              ) throws Exception {
 
-                  FileOutputStream out =
+                  FileOutputStream output =
                       new FileOutputStream(file);
 
                   try {
-                      out.write(
+                      output.write(
                           text.getBytes(
-                              java.nio.charset.StandardCharsets.UTF_8
+                              StandardCharsets.UTF_8
                           )
                       );
                   } finally {
-                      out.close();
+                      output.close();
                   }
               }
           }
           EOF
 
-          # ========================================================
-          # README generated by the workflow
-          # ========================================================
+          # --------------------------------------------------------
+          # Generate README
+          # --------------------------------------------------------
           cat > README.md <<'EOF'
           # NASM Android
 
-          NASM is compiled from source for ARM64 Android using the
-          Android NDK and packaged into an APK.
+          NASM 3.02 compiled for ARM64 Android using the Android NDK.
 
-          Output:
+          Minimum Android version: Android 10 / API 29.
+
+          Build output:
 
               build/output/nasm.apk
           EOF
 
-      # ------------------------------------------------------------
+      # ============================================================
       # 5. Download NASM source
-      # ------------------------------------------------------------
-      - name: Download NASM source
+      # ============================================================
+      - name: Download NASM 3.02
         shell: bash
         run: |
-          set -euxo pipefail
+          set -euo pipefail
 
-          curl -fL --retry 5 --retry-delay 2 \
+          curl \
+            --fail \
+            --location \
+            --retry 5 \
+            --retry-delay 2 \
+            --connect-timeout 30 \
+            --show-error \
+            --silent \
             -o "nasm-${NASM_VERSION}.tar.xz" \
             "https://www.nasm.us/pub/nasm/releasebuilds/${NASM_VERSION}/nasm-${NASM_VERSION}.tar.xz"
 
           echo "${NASM_SHA256}  nasm-${NASM_VERSION}.tar.xz" \
             | sha256sum -c -
 
-      # ------------------------------------------------------------
-      # 6. Extract
-      # ------------------------------------------------------------
+          echo "NASM source archive verified."
+
+      # ============================================================
+      # 6. Extract source
+      # ============================================================
       - name: Extract NASM
         shell: bash
         run: |
-          set -euxo pipefail
-          tar -xJf "nasm-${NASM_VERSION}.tar.xz"
+          set -euo pipefail
 
-      # ------------------------------------------------------------
-      # 7. Cross-compile NASM for Android ARM64
-      # ------------------------------------------------------------
-      - name: Compile NASM for Android ARM64
+          tar \
+            -xJf \
+            "nasm-${NASM_VERSION}.tar.xz"
+
+      # ============================================================
+      # 7. Cross compile
+      # ============================================================
+      - name: Build NASM for Android ARM64
         shell: bash
         run: |
-          set -euxo pipefail
+          set -euo pipefail
 
           TOOLCHAIN="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64"
 
           export PATH="${TOOLCHAIN}/bin:${PATH}"
 
+          # --------------------------------------------------------
+          # Android ARM64 compiler.
+          #
+          # IMPORTANT:
+          # The GitHub runner itself is x86-64.
+          # Therefore this binary MUST NOT be executed here.
+          # --------------------------------------------------------
           export CC="aarch64-linux-android${ANDROID_API}-clang"
           export CXX="aarch64-linux-android${ANDROID_API}-clang++"
+
           export AR="llvm-ar"
           export RANLIB="llvm-ranlib"
           export STRIP="llvm-strip"
 
+          # Position independent executable.
           export CFLAGS="-fPIE"
           export LDFLAGS="-pie"
 
           cd "nasm-${NASM_VERSION}"
 
           ./configure \
+            --build=x86_64-pc-linux-gnu \
             --host=aarch64-linux-android \
             --prefix="${GITHUB_WORKSPACE}/nasm-install"
 
           make -j"$(nproc)"
+
           make install
-
-          echo "================ NASM VERSION ================"
-
-          "${GITHUB_WORKSPACE}/nasm-install/bin/nasm" \
-            --version
-
-          echo "================ ELF TYPE ================"
-
-          file \
-            "${GITHUB_WORKSPACE}/nasm-install/bin/nasm"
-
-      # ------------------------------------------------------------
-      # 8. Put native executable into jniLibs
-      # ------------------------------------------------------------
-      - name: Package NASM native executable
-        shell: bash
-        run: |
-          set -euxo pipefail
 
           NASM_BIN="${GITHUB_WORKSPACE}/nasm-install/bin/nasm"
 
-          cp \
-            "$NASM_BIN" \
-            "app/src/main/jniLibs/${ABI}/libnasm.so"
+          echo "=========================================="
+          echo "NASM FILE"
+          echo "=========================================="
 
-          chmod 0755 \
-            "app/src/main/jniLibs/${ABI}/libnasm.so"
+          file "$NASM_BIN"
 
+          echo "=========================================="
+          echo "ELF HEADER"
+          echo "=========================================="
+
+          readelf -h "$NASM_BIN"
+
+          echo "=========================================="
+          echo "ARCHITECTURE VALIDATION"
+          echo "=========================================="
+
+          file "$NASM_BIN" \
+            | grep -Ei \
+              'ARM aarch64|ARM64|aarch64'
+
+          echo "=========================================="
+          echo "PIE / DYNAMIC TYPE"
+          echo "=========================================="
+
+          readelf -h "$NASM_BIN" \
+            | grep -E \
+              'Type:.*DYN'
+
+          echo "=========================================="
+          echo "ANDROID ARM64 NASM BUILD SUCCESSFUL"
+          echo "=========================================="
+
+          # DO NOT DO THIS:
+          #
+          # "$NASM_BIN" --version
+          #
+          # It is an Android ARM64 executable and the GitHub runner
+          # is x86-64 Linux. Executing it would produce:
+          #
+          # Exec format error
+          #
+
+      # ============================================================
+      # 8. Copy executable into Android native-library packaging
+      # ============================================================
+      - name: Package NASM executable
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          NASM_BIN="${GITHUB_WORKSPACE}/nasm-install/bin/nasm"
+
+          DEST="app/src/main/jniLibs/${ABI}/libnasm.so"
+
+          cp "$NASM_BIN" "$DEST"
+
+          chmod 0755 "$DEST"
+
+          # Include NASM license.
           cp \
             "nasm-${NASM_VERSION}/LICENSE" \
             "app/src/main/assets/NASM-LICENSE.txt"
 
-          echo "Packaged native executable:"
-          ls -lh \
-            "app/src/main/jniLibs/${ABI}/libnasm.so"
+          echo "=========================================="
+          echo "PACKAGED NATIVE BINARY"
+          echo "=========================================="
 
-          file \
-            "app/src/main/jniLibs/${ABI}/libnasm.so"
+          file "$DEST"
 
-      # ------------------------------------------------------------
-      # 9. Download Gradle and build APK
-      # ------------------------------------------------------------
+          ls -lh "$DEST"
+
+      # ============================================================
+      # 9. Download Gradle
+      # ============================================================
       - name: Install Gradle
         shell: bash
         run: |
-          set -euxo pipefail
+          set -euo pipefail
 
-          curl -fL --retry 5 --retry-delay 2 \
-            -o gradle.zip \
+          mkdir -p "$HOME/gradle"
+
+          curl \
+            --fail \
+            --location \
+            --retry 5 \
+            --retry-delay 2 \
+            --connect-timeout 30 \
+            --show-error \
+            --silent \
+            -o "$HOME/gradle.zip" \
             "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip"
 
-          unzip -q gradle.zip -d "$HOME/gradle"
+          unzip -q \
+            "$HOME/gradle.zip" \
+            -d "$HOME/gradle"
 
-          echo "$HOME/gradle/gradle-${GRADLE_VERSION}/bin" \
+          echo \
+            "$HOME/gradle/gradle-${GRADLE_VERSION}/bin" \
             >> "$GITHUB_PATH"
 
-          gradle --version
-
-      # ------------------------------------------------------------
-      # 10. Build APK
-      # ------------------------------------------------------------
-      - name: Build debug APK
+      # ============================================================
+      # 10. Check Gradle
+      # ============================================================
+      - name: Check build tools
         shell: bash
         run: |
-          set -euxo pipefail
+          set -euo pipefail
+
+          java -version
+          gradle --version
+
+          echo "ANDROID_SDK_ROOT:"
+          echo "${ANDROID_SDK_ROOT}"
+
+          echo "ANDROID_NDK_HOME:"
+          echo "${ANDROID_NDK_HOME}"
+
+      # ============================================================
+      # 11. Build APK
+      # ============================================================
+      - name: Compile Android APK
+        shell: bash
+        run: |
+          set -euo pipefail
 
           gradle \
             --no-daemon \
             --stacktrace \
             :app:assembleDebug
 
-      # ------------------------------------------------------------
-      # 11. Make the exact requested file
-      # ------------------------------------------------------------
+      # ============================================================
+      # 12. Verify APK exists
+      # ============================================================
+      - name: Verify APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+
+          test -f "$APK"
+
+          echo "APK:"
+          ls -lh "$APK"
+
+      # ============================================================
+      # 13. Create requested output
+      # ============================================================
       - name: Create build/output/nasm.apk
         shell: bash
         run: |
-          set -euxo pipefail
+          set -euo pipefail
 
           mkdir -p build/output
 
@@ -628,16 +837,19 @@ jobs:
 
           test -f build/output/nasm.apk
 
-          echo "========================================"
-          echo "APK CREATED:"
+          echo "=========================================="
+          echo "SUCCESS"
+          echo "=========================================="
+
+          echo "Created:"
           echo "build/output/nasm.apk"
-          echo "========================================"
 
-          ls -lh build/output/nasm.apk
+          ls -lh \
+            build/output/nasm.apk
 
-      # ------------------------------------------------------------
-      # 12. Upload GitHub Actions artifact
-      # ------------------------------------------------------------
+      # ============================================================
+      # 14. Upload artifact
+      # ============================================================
       - name: Upload nasm.apk
         uses: actions/upload-artifact@v4
         with:
